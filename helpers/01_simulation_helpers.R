@@ -57,7 +57,7 @@ simulate_many_fGN <- function(TMax, Hs, n_seeds) {
     nest() %>% 
     ungroup() %>% 
     hoist('data', 'value') %>% 
-    rename(ts_original = value) %>% 
+    rename(ts = value) %>% 
     select(!data)
 }
 

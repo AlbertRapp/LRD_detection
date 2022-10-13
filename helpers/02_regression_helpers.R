@@ -71,10 +71,13 @@ classify_slope <- function(slope) {
 estimate_d_GPH <- function(periodogram, lBd, uBd) {
   n <- seq_along(periodogram)
   n <- n[between(n, lBd, uBd) & (periodogram > 0)]
-  w <- 2 * pi * n/length(periodogram)
+  w <- 2 * pi * n / length(periodogram)
+  freqs <- 2 * sin(w/2)
+  freqs <- freqs[freqs > 0]
+  if (is_empty(n)) return(NA)
   
+  x.reg <- 2 * log(freqs)
   y.reg <- log(periodogram[n]/(2 * pi))
-  x.reg <- 2 * log(2 * sin(w/2))
   fit <- lm.fit(cbind(1, x.reg), y.reg)
   d.GPH <- coef(fit)[["x.reg"]]
   -d.GPH
@@ -92,15 +95,127 @@ estimate_var_slope_grid <- function(variance, grid) {
     )
 }
 
+compute_var_grid_estimates_helper <- function(variances, grid){
+  tmp <- future_map(
+    variances$variance,
+    ~estimate_var_slope_grid(., grid = grid)
+  )
+  
+  tibble(
+    simu_id = variances$simu_id,
+    H = variances$H,
+    grid_estimates = tmp
+  )
+}
+
+compute_var_grid_estimates <- function(variances, grid, TMax) {
+  if (TMax <= 100) {
+    # If TMax is small enough, then the grid estimates can be computed in one go
+    grid_estimates <- compute_var_grid_estimates_helper(variances, grid)
+    
+    # Save as intermediate result
+    write_rds(
+      grid_estimates, 
+      glue::glue('computed_data/{variance_tag}_grid_estimates_var_{TMax}.rds')
+    )
+  }
+  
+  if (TMax > 100) {
+    # If TMax is not small enough, then compute grid estimates in chunks
+    # Split grid into chunks
+    nrow_75 <- compute_grid(75) %>% nrow()
+    n_grid_slices <- ceiling(nrow(grid) / nrow_75)
+    set.seed(4635635)
+    grid_slices <- split(
+      grid, 
+      sample(1:n_grid_slices, nrow(grid), replace=T)
+    )
+    
+    # Run calculation for each chunk and save it on disk
+    for (idx in seq_along(grid_slices)) {
+      grid_slice <- grid_slices[[idx]]
+      grid_estimates <- compute_var_grid_estimates_helper(variances, grid_slice)
+      
+      # Save as intermediate result
+      write_rds(
+        grid_estimates, 
+        glue::glue(
+          'computed_data/{variance_tag}_grid_estimates_var_{TMax}_{idx}.rds'
+        )
+      )
+      
+      rm(grid_estimates)
+      if (idx %% 10 == 0) {
+        gc()
+      }
+    }
+    
+  }
+}
+
+
+
+
+
+safe_estimate_d_GPH <- safely(estimate_d_GPH, otherwise = NA)
+
+
+
 estimate_GPH_slope_grid <- function(periodogram, grid)  {
   grid %>% 
     mutate(
-      d_GPH = map2_dbl(lBd, uBd, ~estimate_d_GPH(periodogram, .x, .y)),
+      d_GPH = map2_dbl(lBd, uBd, ~safe_estimate_d_GPH(periodogram, .x, .y)$result),
       classification = classify_d_GPH(d_GPH)
     )
 }
 
-compute_GPH_grid_estimates <- function(periodograms, grid_GPH){
+compute_GPH_grid_estimates <- function(periodograms, grid_GPH, TMax) {
+  if (TMax <= 100) {
+    # If TMax is small enough, then the grid estimates can be computed in one go
+    grid_estimates_GPH <- compute_GPH_grid_estimates_helper(periodograms, grid_GPH)
+    
+    # Save as intermediate result
+    write_rds(
+      grid_estimates_GPH, 
+      glue::glue('computed_data/{variance_tag}_grid_estimates_GPH_{TMax}.rds')
+    )
+  }
+  
+  if (TMax > 100) {
+    # If TMax is not small enough, then compute grid estimates in chunks
+    # Split grid into chunks
+    nrow_75 <- compute_grid(75) %>% nrow()
+    n_grid_slices <- ceiling(nrow(grid_GPH) / nrow_75)
+    set.seed(4635635)
+    grid_GPH_slices <- split(
+      grid_GPH, 
+      sample(1:n_grid_slices, nrow(grid_GPH), replace=T)
+    )
+    
+    # Run calculation for each chunk and save it on disk
+    for (idx in seq_along(grid_GPH_slices)) {
+      grid_slice <- grid_GPH_slices[[idx]]
+      grid_estimates_GPH <- compute_GPH_grid_estimates_helper(periodograms, grid_slice)
+      
+      # Save as intermediate result
+      write_rds(
+        grid_estimates_GPH, 
+        glue::glue(
+          'computed_data/{variance_tag}_grid_estimates_GPH_{TMax}_{idx}.rds'
+        )
+      )
+      
+      rm(list = c('grid_estimates_GPH'))
+      if (idx %% 3 == 0) {
+        gc()
+      }
+    }
+    
+  }
+}
+
+
+compute_GPH_grid_estimates_helper <- function(periodograms, grid_GPH){
   tmp <- future_map(
     periodograms$periodogram,
     ~estimate_GPH_slope_grid(., grid = grid_GPH)

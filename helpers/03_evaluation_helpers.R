@@ -1,15 +1,30 @@
+perform_majority_vote_on_grid <- function(collected_grid_estimates) {
+  collected_grid_estimates |> 
+    group_by(lBd, uBd) |> 
+    summarize(
+      LRD_votes = sum(slope >= (-1)), 
+      SRD_votes = sum(slope < (-1)),
+      .groups = 'drop'
+    ) |> 
+    mutate(classification = if_else(LRD_votes >= SRD_votes, "LRD", 'SRD'))
+}
+
 # Computes metrics (Accuracy, Sensitivity, etc.)
-evaluate_metrics <- function(grid_estimates, metric_set) {
-  grid_estimates %>%
+evaluate_metrics <- function(grid_estimates, mset, infinite_variance) {
+  threshold <- if (infinite_variance) (3 / 4) else (1 / 2)
+  
+  grouped_and_cleaned_estimates <- grid_estimates %>%
     select(H, grid_estimates) %>% 
     unnest(grid_estimates) %>% 
     mutate(
-      mem = if_else(H > 1 / 2, "LRD", "SRD"),
+      mem = if_else(H > threshold, "LRD", "SRD"),
       mem = factor(mem, levels = c("LRD", "SRD")),
       classification = factor(classification, levels = c("LRD", "SRD"))
     ) %>% 
-    group_by(lBd, uBd) %>% 
-    metric_set(truth = mem, estimate = classification) %>% 
+    group_by(lBd, uBd) 
+  
+  grouped_and_cleaned_estimates %>% 
+    mset(truth = mem, estimate = classification) %>% 
     select(-.estimator) %>% 
     rename(metric = .metric, estimate = .estimate) %>% 
     mutate(metric = case_when(
@@ -19,16 +34,48 @@ evaluate_metrics <- function(grid_estimates, metric_set) {
     ))
 }
 
-collect_metrics_GPH <- function(dir, TMax) {
+
+collect_metrics <- function(TMax, mset, infinite_variance, dir = 'computed_data/', estimator) {
   if (str_ends(dir, '/', negate = T)) {
     dir <- paste0(dir, '/')
   }
-  list.files(dir) %>%
-    str_subset(glue::glue('grid_estimates_GPH_{TMax}')) %>%
-    paste0(dir, .) %>% 
-    map_dfr(read_rds) %>% 
-    group_by(simu_id, H) %>% 
-    summarise(grid_estimates = list(bind_rows(grid_estimates)), .groups = 'drop')
+  
+  estimator_tag <- if (estimator == 'variance') 'var' else 'GPH'
+  
+  locations <- list.files(
+    path = dir, 
+    pattern = glue::glue('{variance_tag}_grid_estimates_{estimator_tag}_{TMax}_\\d+.rds')
+  ) %>% 
+    paste0(dir, .)
+  
+  
+  metrics_list <- foreach (loc = locations) %do% {
+    tmp <- read_rds(loc)
+    
+    metrics_tmp <- evaluate_metrics(tmp, mset, infinite_variance)
+  
+    metrics_tmp
+  } 
+  
+  bind_rows(metrics_list)
+}
+
+collect_and_evaluate_metrics <- function(TMax, mset, infinite_variance, estimator) {
+  estimator_tag <- if (estimator == 'variance') 'var' else 'GPH'
+  if (TMax <= 100) {
+    grid_estimates <- read_rds(
+      glue::glue('computed_data/{variance_tag}_grid_estimates_{estimator_tag}_{TMax}.rds')
+    )
+    metrics <- evaluate_metrics(
+      grid_estimates, my_mset, infinite_variance
+    )
+  }
+  if (TMax > 100) {
+    metrics <- collect_metrics(
+      TMax = TMax, my_mset, infinite_variance, estimator = estimator
+    ) 
+  }
+  metrics
 }
 
 

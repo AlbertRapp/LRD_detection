@@ -1,0 +1,361 @@
+---
+format:
+  html: 
+    standalone: true
+theme: theme.scss
+title: Simulation study
+toc: true
+params:
+  n_seeds: 1000
+  TMax: 100
+  infinite_variance: true
+  alpha: 1
+  text_edit_mode_only: false
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+#| echo: false
+all_times <- list()
+knitr::knit_hooks$set(time_it = local({
+  now <- NULL
+  function(before, options) {
+    if (before) {
+      # record the current time before each chunk
+      now <<- Sys.time()
+    } else {
+      # calculate the time difference after a chunk
+      later <- Sys.time()
+      interval <- lubridate::interval(now, later)
+      # return a character string to show the time
+      times <- list(
+        chunk = options$label,
+        sec = round(interval / lubridate::seconds(1), 2),
+        min = round(interval / lubridate::minutes(1), 2),
+        hours =  round(interval / lubridate::hours(1), 2)
+      )
+      all_times[[options$label]] <<- times
+    }
+  }
+}))
+knitr::opts_chunk$set(time_it = TRUE)
+```
+
+## Scope
+
+This document is intended to run the simulation study for **`r if (params$infinite_variance) "subordinated "`fractional Gaussian noise** time series of length **`r params$TMax` `r if (params$infinite_variance) glue::glue(" and parameter $\\alpha = {params$alpha}$")`**. For more details, please check our paper.
+
+
+## Import helper functions
+
+```{r packages}
+#| message: false
+#| warning: false
+setwd(here::here())
+source('helpers/00_libraries.R')
+source('helpers/01_simulation_helpers.R')
+source('helpers/02_regression_helpers.R')
+source('helpers/03_evaluation_helpers.R')
+Rcpp::sourceCpp('helpers/04_estimate_variance_C.cpp')
+```
+
+## Define necessary parameters
+
+```{r parameters}
+# variance tag will be used to identify computed data
+variance_tag <- if (params$infinite_variance) "infVar" else "finVar"
+H_lower <- if (params$infinite_variance) 0.6 else 0.3
+H_upper <- if (params$infinite_variance) 0.9 else 0.7
+kMax_cutoff <- 150
+
+Hs <- seq(H_lower, H_upper, length.out = 12) # Hurst parameter
+Hs
+
+# metric set to evaluate classification
+my_mset <- metric_set(accuracy, sens, spec)
+n_seeds <- params$n_seeds # simulations per Hurst parameter and TMax
+n_seeds
+TMax <- params$TMax # ts length
+TMax
+```
+
+
+## Simulate fGN time series
+
+```{r simulate_ts}
+#| eval: !expr (!params$text_edit_mode_only)
+# Enable parallel-processing
+plan(multisession, workers = 2)
+time_series_dat <- simulate_many_fGN(TMax, Hs, n_seeds)
+
+if (params$infinite_variance) {
+  set.seed(253245)
+  mu <- runif(100, min = 0, max = 1)
+  
+  time_series_dat <- time_series_dat %>% 
+    mutate(
+      # Subordinate
+      ts = map(ts, ~exp(.^2 / 2)),
+      # Convert to Binomial process via discrete measure mu
+      ts = map(ts, ~convert_to_bernoulli(., mu = mu))
+    )
+}
+print(time_series_dat, n = 2)
+```
+
+## Compute the periodograms and variances
+
+```{r estimate_vars_and_periodograms}
+#| eval: !expr (!params$text_edit_mode_only)
+vars_and_periodograms <- time_series_dat %>% 
+  mutate(
+    variance = map(ts, estimate_variance_C, kMax =  min(TMax / 3, kMax_cutoff)),
+    periodogram = map(ts, estimate_periodogram)
+  )
+# Save as intermediate result
+write_rds(
+  vars_and_periodograms, 
+  glue::glue('computed_data/{variance_tag}_vars_and_periodograms_{TMax}.rds')
+)
+print(vars_and_periodograms, n = 2)
+```
+
+Notice that the variance vectors are shorter because by default the variance is only estimated until a certain threshold. 
+This is done to save time because the regression is done on a smaller window anyway (because the variance estimator does not perform well there).
+
+## Compute grid estimates
+
+Now, we will compute grid estimates.
+
+### Variance estimator
+
+Let us begin with the variance estimator.
+
+
+```{r grid_estimates_variance}
+#| eval: !expr (!params$text_edit_mode_only)
+# We restrict our grid from above because the variance estimator
+# never performs well for huge cutoff values anyway.
+grid <- compute_grid(TMax = min(TMax / 3, kMax_cutoff))
+
+variances <- vars_and_periodograms %>% 
+  select(-periodogram)
+
+# Computes var grid estimates and saves results to HDD
+compute_var_grid_estimates(variances, grid, TMax)
+```
+
+```{r}
+#| echo: false
+#| results: hide
+
+# Clear large objects to make room for other calcs
+rm(list = c('time_series_dat', 'variances'))
+gc()
+```
+
+
+### GPH estimator
+
+
+Of course, we do the same thing for the GPH estimator.
+Note that this estimator can use the full grid.
+
+```{r grid_estimates_GPH}
+#| eval: !expr (!params$text_edit_mode_only)
+grid_GPH <- compute_grid(TMax = TMax) 
+
+periodograms <- vars_and_periodograms %>% 
+  select(-c(variance, ts))
+
+# Computes GPH grid estimates and saves results to HDD
+compute_GPH_grid_estimates(periodograms, grid_GPH, TMax)
+```
+
+## Compute metrics for each cutoff
+
+```{r}
+#| echo: false
+#| results: hide
+
+# Clear large objects to make room for grid metrics
+rm(list = c('periodograms'))
+gc()
+```
+
+### Variance Estimator
+
+
+```{r compute_metrics}
+#| eval: !expr (!params$text_edit_mode_only)
+plan(sequential) # Switch back to sequential processing
+
+metrics_var <- collect_and_evaluate_metrics(
+  TMax, my_mset, params$infinite_variance, estimator = 'variance'
+)
+
+# Save as intermediate result
+write_rds(
+  metrics_var, 
+  glue::glue('computed_data/{variance_tag}_metrics_var_{TMax}.rds')
+)
+```
+
+
+### GPH Estimator
+
+<!-- 
+Set warnings and messages to false here. 
+The reason why these occur is because it can happen that d_GPH = NA for all paths.
+This is the case then lBd and uBd are chosen badly.
+The NAs will then mess with the calculations of the metrics.
+The estimated metrics will then be NA as well.
+That's ok because the visualizations will show that the corresponding combination 
+of lBd and uBd is greyed out then.
+-->
+
+```{r compute_metrics_GPH}
+#| eval: !expr (!params$text_edit_mode_only)
+#| warning: false
+#| message: false
+
+metrics_GPH <- collect_and_evaluate_metrics(
+  TMax, my_mset, params$infinite_variance, estimator = 'GPH'
+)
+
+# Save as intermediate result
+write_rds(
+  metrics_GPH, 
+  glue::glue('computed_data/{variance_tag}_metrics_GPH_{TMax}.rds')
+)
+```
+
+## Visualizations
+
+```{r}
+#| eval: !expr params$text_edit_mode_only
+#| echo: false
+metrics_var <- read_rds(
+  glue::glue('computed_data/{variance_tag}_metrics_var_{TMax}.rds')
+)
+metrics_GPH <- read_rds(
+  glue::glue('computed_data/{variance_tag}_metrics_GPH_{TMax}.rds')
+)
+```
+
+These metrics can be visualized as follows.
+
+```{r}
+#| eval: !expr (!params$text_edit_mode_only)
+#| code-fold: true
+ggsave(
+  filename = glue::glue('images/{variance_tag}_metrics_var_{TMax}.png'),
+  plot = plot_metrics(metrics_var, uBd_max = min(TMax / 3, kMax_cutoff)),
+  width = 16,
+  height = 9,
+  units = 'cm',
+  dpi = 300,
+  bg = 'white'
+)
+
+
+ggsave(
+  filename = glue::glue('images/{variance_tag}_metrics_GPH_{TMax}.png'),
+  plot = plot_metrics(metrics_GPH, uBd_max = TMax),
+  width = 16,
+  height = 9,
+  units = 'cm',
+  dpi = 300,
+  bg = 'white'
+)
+```
+
+### Variance estimator
+
+```{r}
+#| echo: false
+
+knitr::include_graphics(
+  glue::glue('images/{variance_tag}_metrics_var_{TMax}.png')
+)
+```
+
+
+### GPH estimator
+
+
+```{r}
+#| echo: false
+knitr::include_graphics(
+  glue::glue('images/{variance_tag}_metrics_GPH_{TMax}.png')
+)
+```
+
+We are mainly interested in comparability of the two estimators under best conditions.
+So, let us compute the best overall cutoff values w.r.t. to Accuracy. 
+
+::: {.grid}
+
+::: {.g-col-12 .g-col-md-6}
+
+### Top 5 cutoffs of the Variance estimator
+
+```{r}
+#| echo: false
+metrics_var %>% 
+  pivot_wider(names_from = metric, values_from = estimate) %>% 
+  slice_max(Accuracy, n = 5, with_ties = F) %>% 
+  gt::gt() %>% 
+  gt::fmt_percent(columns = 3:5)
+```
+
+:::
+
+::: {.g-col-12 .g-col-md-6}
+
+### Top 5 cutoffs of the GPH estimator
+
+```{r}
+#| echo: false
+metrics_GPH %>% 
+  pivot_wider(names_from = metric, values_from = estimate) %>% 
+  slice_max(Accuracy, n = 5, with_ties = F) %>% 
+  gt::gt()  %>% 
+  gt::fmt_percent(columns = 3:5)
+```
+
+:::
+
+:::
+
+
+
+## Time for simulations
+
+```{r, time_it=FALSE}
+#| echo: false
+#| eval: !expr (!params$text_edit_mode_only)
+write_rds(
+  all_times, 
+  glue::glue('computed_data/{variance_tag}_all_times_{TMax}.rds')
+)
+```
+
+
+```{r, time_it=FALSE}
+#| echo: false
+saved_times <- read_rds(
+  glue::glue('computed_data/{variance_tag}_all_times_{TMax}.rds')
+) %>%
+  bind_rows() 
+saved_times %>%
+  add_row(
+    chunk = 'total',
+    sec = sum(saved_times$sec),
+    min = sum(saved_times$min),
+    hours = sum(saved_times$hours)
+  ) %>% 
+  filter(!str_detect(chunk, 'unnamed'))
+```
+
