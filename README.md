@@ -9,12 +9,18 @@ For your convenience, the html files are hosted at
 
 ## Finite variance
 
-[Finite variance (length 50)](albertrapp.github.io/lrd_detection/finVarSimulations_50.html)
-[Finite variance (length 100)](albertrapp.github.io/lrd_detection/finVarSimulations_100.html)
-[Finite variance (length 200)](albertrapp.github.io/lrd_detection/finVarSimulations_200.html)
-[Finite variance (length 500)](albertrapp.github.io/lrd_detection/finVarSimulations_500.html)
+[Finite variance (length 50)](https://albertrapp.github.io/lrd_detection/finVar_Simulations_50.html)
 
-[Infnite variance (length 50)](albertrapp.github.io/lrd_detection/infVarSimulations_50.html)
-[Infnite variance (length 100)](albertrapp.github.io/lrd_detection/infVarSimulations_100.html)
-[Infnite variance (length 200)](albertrapp.github.io/lrd_detection/infVarSimulations_200.html)
-[Infnite variance (length 500)](albertrapp.github.io/lrd_detection/infVarSimulations_500.html)
+[Finite variance (length 100)](https://albertrapp.github.io/lrd_detection/finVar_Simulations_100.html)
+
+[Finite variance (length 200)](https://albertrapp.github.io/lrd_detection/finVar_Simulations_200.html)
+
+[Finite variance (length 500)](https://albertrapp.github.io/lrd_detection/finVar_Simulations_500.html)
+
+[Infnite variance (length 50)](https://albertrapp.github.io/lrd_detection/infVar_Simulations_50.html)
+
+[Infnite variance (length 100)](https://albertrapp.github.io/lrd_detection/infVar_Simulations_100.html)
+
+[Infnite variance (length 200)](https://albertrapp.github.io/lrd_detection/infVar_Simulations_200.html)
+
+[Infnite variance (length 500)](https://albertrapp.github.io/lrd_detection/infVar_Simulations_500.html)
